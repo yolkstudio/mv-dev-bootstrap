@@ -4,8 +4,8 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/yolkstudio/mv-dev-bootstrap/main/bootstrap.sh | bash
 #
-# Installs Homebrew + base CLIs, sets up git identity and an SSH key, signs in
-# to Azure, then clones the private Mv.Common.Tooling repo from Azure DevOps
+# Installs Homebrew + base CLIs and Claude Code, sets up git identity and an SSH
+# key, signs in to Azure, then clones the private Mv.Common.Tooling repo from Azure DevOps
 # and hands over to its install.sh.
 #
 # Safe to re-run: every step checks before it acts.
@@ -47,6 +47,7 @@ main() {
   step "Base packages";        install_linux_prereqs
   step "Homebrew";             install_homebrew
   step "Core CLIs";            brew_install git azure-cli
+  step "Claude Code";          install_claude_code
   step "Git identity";         configure_git_identity
   step "SSH key";              configure_ssh_key
   step "Azure sign-in";        azure_login
@@ -138,8 +139,8 @@ preflight() {
   have curl || abort "curl is required."
 
   step "Mutual Vision developer bootstrap ($OS $(uname -m))"
-  info "This will install Homebrew and CLI tools, set up git/SSH, sign you in to"
-  info "Azure and clone Mv.Common.Tooling. You may be asked for your password."
+  info "This will install Homebrew, CLI tools and Claude Code, set up git/SSH, sign"
+  info "you in to Azure and clone Mv.Common.Tooling. You may be asked for your password."
 
   if [[ "$NONINTERACTIVE" != 1 ]]; then
     # shellcheck disable=SC2024 # the redirect is for sudo's password prompt
@@ -210,6 +211,35 @@ brew_install() {
     brew install "${missing[@]}"
   fi
   ok "Installed: $*"
+}
+
+# Claude Code comes first so it can help with anything that goes wrong after this
+# point. Native installer: self-updating, no Node.js needed, installs the
+# launcher to ~/.local/bin.
+install_claude_code() {
+  local bin="$HOME/.local/bin"
+  case ":$PATH:" in *":$bin:"*) ;; *) export PATH="$bin:$PATH" ;; esac
+
+  if ! have claude; then
+    info "Installing Claude Code (native installer)..."
+    curl -fsSL https://claude.ai/install.sh | bash >/dev/null
+    have claude || abort "Claude Code install did not produce a claude binary in $bin."
+  fi
+
+  # Persist PATH for future shells (same file as Homebrew's shellenv line).
+  # shellcheck disable=SC2016 # written literally so it expands in the user's shell
+  local line='export PATH="$HOME/.local/bin:$PATH"' rc
+  case "$(basename "${SHELL:-bash}")" in
+    zsh)  rc="$HOME/.zprofile" ;;
+    bash) if [[ "$OS" == Darwin ]]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi ;;
+    *)    rc="$HOME/.profile" ;;
+  esac
+  if ! grep -qsF "$line" "$rc"; then
+    printf '\n%s\n' "$line" >> "$rc"
+    info "Added ~/.local/bin to $rc"
+  fi
+  ok "Claude Code $(claude --version 2>/dev/null | awk '{print $1}')"
+  info "Sign in later by running 'claude' once. Mv.Common.Tooling adds the MV plugin."
 }
 
 configure_git_identity() {
