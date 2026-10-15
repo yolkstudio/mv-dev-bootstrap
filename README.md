@@ -19,11 +19,12 @@ bash bootstrap.sh
 1. **Base packages** – build tools on Linux (`apt` or `dnf`); on macOS Homebrew installs the Xcode Command Line Tools.
 2. **Homebrew** – installs it if missing and adds it to your shell profile.
 3. **Core CLIs** – `git`, `azure-cli`.
-4. **Git identity** – asks for your name and `@mutualvision.co.uk` email if not set.
-5. **SSH key** – creates `~/.ssh/id_ed25519` if missing and pins it for `ssh.dev.azure.com`. Adding it to Azure DevOps (<https://dev.azure.com/Mutual-Vision/_usersSettings/keys>) is optional – only needed if you want SSH remotes.
-6. **Azure** – `az login` with your MV account.
-7. **Azure DevOps** – configures git to authenticate to `dev.azure.com` with your Azure sign-in (short-lived Entra tokens: no PAT, no SSH key upload), then waits until you have read access to the private tooling repo.
-8. **Mv.Common.Tooling** – clones it to `~/repos/Mv.Common.Tooling` and runs its `install.sh`, which installs the MV-specific tooling (kubectl/AKS contexts, DB proxy, Claude Code plugins, …).
+4. **Claude Code** – installs it with the native installer (`~/.local/bin/claude`, self-updating) and adds `~/.local/bin` to your shell profile. Run `claude` once to sign in. It's available even while you wait for access to the tooling repo.
+5. **Git identity** – asks for your name and `@mutualvision.co.uk` email if not set.
+6. **SSH key** – creates `~/.ssh/id_ed25519` if missing and pins it for `ssh.dev.azure.com`. Adding it to Azure DevOps (<https://dev.azure.com/Mutual-Vision/_usersSettings/keys>) is optional – only needed if you want SSH remotes.
+7. **Azure** – `az login` with your MV account.
+8. **Azure DevOps** – configures git to authenticate to `dev.azure.com` with your Azure sign-in (short-lived Entra tokens: no PAT, no SSH key upload), then waits until you have read access to the private tooling repo.
+9. **Mv.Common.Tooling** – clones it to `~/repos/Mv.Common.Tooling` and runs its `install.sh`, which installs the MV-specific tooling (kubectl/AKS contexts, DB proxy, the MV Claude Code plugin with its skills and MCP servers, …).
 
 Everything is idempotent: re-run it any time to repair or update a machine.
 
