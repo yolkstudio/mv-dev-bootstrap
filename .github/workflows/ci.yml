@@ -10,10 +10,9 @@ permissions:
 
 jobs:
   shellcheck:
-    runs-on: ubuntu-slim
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: command -v shellcheck || (sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck)
+      - uses: actions/checkout@v7
       - run: shellcheck bootstrap.sh
 
   # Runs the script the way users do (piped) up to the Azure sign-in, which
@@ -23,10 +22,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-slim, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run bootstrap (non-interactive)
         run: |
           set +e

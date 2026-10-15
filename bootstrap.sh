@@ -158,10 +158,10 @@ install_linux_prereqs() {
   fi
   if have apt-get; then
     sudo apt-get update -qq
-    sudo apt-get install -y -qq build-essential procps curl file git
+    sudo apt-get install -y -qq build-essential procps curl file git openssh-client
   elif have dnf; then
     sudo dnf -y -q group install development-tools || sudo dnf -y -q groupinstall 'Development Tools'
-    sudo dnf -y -q install procps-ng curl file git
+    sudo dnf -y -q install procps-ng curl file git openssh-clients
   else
     abort "Unsupported Linux distribution (need apt-get or dnf)."
   fi
@@ -203,7 +203,8 @@ install_homebrew() {
 brew_install() {
   local pkg missing=()
   for pkg in "$@"; do
-    brew list --formula "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+    # Some packages are casks on one OS and formulae on another (azure-cli).
+    brew list "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
   done
   if [[ ${#missing[@]} -gt 0 ]]; then
     brew install "${missing[@]}"
