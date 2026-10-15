@@ -4,9 +4,9 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/yolkstudio/mv-dev-bootstrap/main/bootstrap.sh | bash
 #
-# Installs Homebrew + base CLIs, sets up git identity and an SSH key for GitHub
-# (auth + commit signing), signs in to Azure, then clones the private
-# Mv.Common.Tooling repo from Azure DevOps and hands over to its install.sh.
+# Installs Homebrew + base CLIs, sets up git identity and an SSH key, signs in
+# to Azure, then clones the private Mv.Common.Tooling repo from Azure DevOps
+# and hands over to its install.sh.
 #
 # Safe to re-run: every step checks before it acts.
 #
@@ -23,14 +23,12 @@ main() {
   local tooling_dir="${MV_TOOLING_DIR:-$HOME/repos/Mv.Common.Tooling}"
   local tooling_ref="${MV_TOOLING_REF:-main}"
   local tenant_id="${MV_TENANT_ID:-949e9f20-d9fa-4c2f-900a-f242465ba80f}"
-  local skip_github="${MV_SKIP_GITHUB:-0}"
   local non_interactive="${NONINTERACTIVE:-0}"
   # Entra ID application id of Azure DevOps (constant, public).
   local ado_resource="499b84ac-1321-427f-aa17-267ca6975798"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --skip-github) skip_github=1 ;;
       --non-interactive) non_interactive=1 ;;
       -h|--help) usage; return 0 ;;
       *) abort "Unknown option: $1 (see --help)" ;;
@@ -48,12 +46,9 @@ main() {
   preflight
   step "Base packages";        install_linux_prereqs
   step "Homebrew";             install_homebrew
-  step "Core CLIs";            brew_install git gh azure-cli
+  step "Core CLIs";            brew_install git azure-cli
   step "Git identity";         configure_git_identity
-  step "SSH key (GitHub)";     configure_ssh_key
-  if [[ "$skip_github" != 1 ]]; then
-    step "GitHub";             configure_github
-  fi
+  step "SSH key";              configure_ssh_key
   step "Azure sign-in";        azure_login
   step "Azure DevOps access";  configure_ado_git
   wait_for_ado_access
@@ -74,9 +69,8 @@ main() {
 
 usage() {
   cat <<'EOF'
-Usage: bootstrap.sh [--skip-github] [--non-interactive]
+Usage: bootstrap.sh [--non-interactive]
 
-  --skip-github       Don't sign in to GitHub / upload the SSH key.
   --non-interactive   Never prompt (also: NONINTERACTIVE=1). Steps that need
                       a human (Azure sign-in) must already be done.
 
@@ -254,72 +248,27 @@ configure_ssh_key() {
     ok "Created $key"
   fi
 
+  # Azure DevOps only tries the first key the client offers, so pin this one.
   local cfg="$HOME/.ssh/config"
-  if ! grep -qsE '^Host (.* )?github\.com( |$)' "$cfg"; then
+  if ! grep -qsE '^Host (.* )?ssh\.dev\.azure\.com( |$)' "$cfg"; then
     {
-      printf '\nHost github.com\n'
+      printf '\nHost ssh.dev.azure.com\n'
       printf '  AddKeysToAgent yes\n'
       [[ "$OS" == Darwin ]] && printf '  UseKeychain yes\n'
       printf '  IdentityFile ~/.ssh/id_ed25519\n'
+      printf '  IdentitiesOnly yes\n'
     } >> "$cfg"
     chmod 600 "$cfg"
-    info "Added a github.com entry to $cfg"
+    info "Added an ssh.dev.azure.com entry to $cfg"
   fi
   if [[ "$OS" == Darwin && "$NONINTERACTIVE" != 1 ]]; then
     ssh-add --apple-use-keychain "$key" </dev/tty 2>/dev/null || true
   fi
 
-  # SSH commit signing (replaces GPG). Verified badges show on GitHub once the
-  # key is also added there as a *signing* key.
-  if [[ "$(git config --global gpg.format || true)" != ssh ]]; then
-    if ask "Sign git commits with this SSH key?" y; then
-      git config --global gpg.format ssh
-      git config --global user.signingkey "$key.pub"
-      git config --global commit.gpgsign true
-      git config --global tag.gpgsign true
-      local signers="$HOME/.ssh/allowed_signers"
-      grep -qsF "$(cut -d' ' -f1-2 "$key.pub")" "$signers" \
-        || printf '%s %s\n' "${GIT_EMAIL:-*}" "$(cut -d' ' -f1-2 "$key.pub")" >> "$signers"
-      git config --global gpg.ssh.allowedSignersFile "$signers"
-      ok "Commit signing enabled."
-    fi
-  else
-    ok "Commit signing already configured."
-  fi
-}
-
-configure_github() {
-  local pub="$HOME/.ssh/id_ed25519.pub"
-  local title
-  title="mv-dev $(hostname -s 2>/dev/null || hostname)"
-
-  if [[ "$NONINTERACTIVE" != 1 ]] && ask "Upload your SSH key to GitHub now (opens a browser sign-in)?" y; then
-    if ! gh auth status --hostname github.com >/dev/null 2>&1; then
-      gh auth login --hostname github.com --git-protocol ssh --skip-ssh-key --web \
-        --scopes admin:public_key,admin:ssh_signing_key </dev/tty
-    else
-      gh auth refresh --hostname github.com --scopes admin:public_key,admin:ssh_signing_key </dev/tty || true
-    fi
-    local type
-    for type in authentication signing; do
-      if gh ssh-key add "$pub" --title "$title" --type "$type" 2>/dev/null; then
-        ok "Added as GitHub $type key."
-      else
-        info "GitHub $type key already present (or upload failed)."
-      fi
-    done
-  else
-    info "Add this key at https://github.com/settings/ssh/new"
-    info "twice: once as 'Authentication Key' and once as 'Signing Key':"
-    printf '\n%s\n\n' "$(cat "$pub")"
-    pause "Press Enter when done (or to skip)..." || true
-  fi
-
-  if ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1 | grep -q "successfully authenticated"; then
-    ok "GitHub SSH works."
-  else
-    warn "GitHub SSH not working yet; you can add the key later. Continuing."
-  fi
+  # Optional: git already authenticates over HTTPS with your Azure sign-in.
+  info "Optional, only if you want to use SSH remotes: add this key at"
+  info "https://dev.azure.com/Mutual-Vision/_usersSettings/keys"
+  printf '\n%s\n\n' "$(cat "$key.pub")"
 }
 
 azure_login() {

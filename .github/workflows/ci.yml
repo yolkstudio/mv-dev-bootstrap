@@ -30,6 +30,6 @@ jobs:
       - name: Run bootstrap (non-interactive)
         run: |
           set +e
-          out=$(cat bootstrap.sh | NONINTERACTIVE=1 bash -s -- --skip-github 2>&1)
+          out=$(cat bootstrap.sh | NONINTERACTIVE=1 bash 2>&1)
           echo "$out"
           echo "$out" | grep -q "Not signed in to Azure"
