@@ -242,23 +242,57 @@ install_claude_code() {
   info "Sign in later by running 'claude' once. Mv.Common.Tooling adds the MV plugin."
 }
 
+# Remote URL forms of Mutual-Vision Azure DevOps repos (plain HTTPS, HTTPS with the
+# user name the ADO "Clone" button adds, SSH).
+MV_GIT_REMOTES=(
+  "https://dev.azure.com/Mutual-Vision/**"
+  "https://*@dev.azure.com/Mutual-Vision/**"
+  "*@ssh.dev.azure.com:v3/Mutual-Vision/**"
+)
+
+# The MV email only applies to repos whose remote is in Mutual-Vision Azure DevOps
+# (git includeIf hasconfig:remote, git 2.36+), wherever they are cloned. The global
+# identity stays yours for every other repo.
 configure_git_identity() {
-  local name email
+  local name global_email email mvcfg="$HOME/.gitconfig-mv" r
   name="$(git config --global user.name || true)"
-  email="$(git config --global user.email || true)"
+  global_email="$(git config --global user.email || true)"
   if [[ -z "$name" ]]; then
     name="$(prompt "Your full name for git commits")"
     [[ -n "$name" ]] && git config --global user.name "$name"
   fi
-  if [[ -z "$email" || "$email" != *@mutualvision.co.uk ]]; then
-    [[ -n "$email" ]] && warn "Current git email is $email."
-    local new
-    new="$(prompt "Your work email for git commits" "$email")"
-    [[ -n "$new" ]] && { email="$new"; git config --global user.email "$email"; }
+
+  email="$(git config --file "$mvcfg" user.email 2>/dev/null || true)"
+  if [[ "$email" != *@mutualvision.co.uk ]]; then
+    local default=""
+    [[ "$global_email" == *@mutualvision.co.uk ]] && default="$global_email"
+    while :; do
+      email="$(prompt "Your @mutualvision.co.uk email for commits to MV repos" "$default")"
+      [[ "$email" == *@mutualvision.co.uk || "$NONINTERACTIVE" == 1 ]] && break
+      warn "Use your @mutualvision.co.uk address."
+    done
+    [[ -n "$email" ]] && git config --file "$mvcfg" user.email "$email"
   fi
-  git config --global init.defaultBranch main
-  git config --global pull.ff only
-  ok "git: ${name:-<unset>} <${email:-unset}>"
+  git config --file "$mvcfg" pull.ff only
+
+  for r in "${MV_GIT_REMOTES[@]}"; do
+    # shellcheck disable=SC2088 # git expands ~ in include paths itself
+    git config --global "includeIf.hasconfig:remote.*.url:$r.path" "~/.gitconfig-mv"
+  done
+  [[ -n "$(git config --global init.defaultBranch || true)" ]] || git config --global init.defaultBranch main
+
+  # Older bootstrap versions set the MV email globally. Offer to put your own back.
+  if [[ -n "$email" && "$global_email" == "$email" && "$NONINTERACTIVE" != 1 ]]; then
+    local other
+    other="$(prompt "Email for non-MV repos (Enter to keep $global_email)" "$global_email")"
+    if [[ -n "$other" && "$other" != "$global_email" ]]; then
+      git config --global user.email "$other"
+      global_email="$other"
+    fi
+  fi
+
+  ok "git: ${name:-<unset>} <${email:-unset}> in Mutual-Vision Azure DevOps repos (from $mvcfg)"
+  [[ -n "$global_email" && "$global_email" != "$email" ]] && info "Other repos keep <$global_email>."
   GIT_EMAIL="$email"
 }
 
