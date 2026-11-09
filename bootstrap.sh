@@ -20,7 +20,14 @@ main() {
 
   # --- settings (override via env) ------------------------------------------
   local tooling_repo="${MV_TOOLING_REPO:-https://dev.azure.com/Mutual-Vision/Singularity/_git/Mv.Common.Tooling}"
-  local tooling_dir="${MV_TOOLING_DIR:-$HOME/repos/Mv.Common.Tooling}"
+  # MV repos live here; git uses your MV identity for every repo inside it.
+  local projects_dir="${MV_PROJECTS_DIR:-$HOME/repos/mutual-vision}"
+  projects_dir="${projects_dir%/}"
+  local tooling_dir="${MV_TOOLING_DIR:-$projects_dir/Mv.Common.Tooling}"
+  # Earlier versions cloned to ~/repos/Mv.Common.Tooling; keep using an existing clone.
+  if [[ -z "${MV_TOOLING_DIR:-}" && ! -d "$tooling_dir/.git" && -d "$HOME/repos/Mv.Common.Tooling/.git" ]]; then
+    tooling_dir="$HOME/repos/Mv.Common.Tooling"
+  fi
   local tooling_ref="${MV_TOOLING_REF:-main}"
   local tenant_id="${MV_TENANT_ID:-949e9f20-d9fa-4c2f-900a-f242465ba80f}"
   local non_interactive="${NONINTERACTIVE:-0}"
@@ -77,7 +84,8 @@ Usage: bootstrap.sh [--non-interactive]
 
 Environment overrides:
   MV_TOOLING_REPO   private tooling repo URL
-  MV_TOOLING_DIR    clone location            (default: ~/repos/Mv.Common.Tooling)
+  MV_PROJECTS_DIR   folder for MV repos       (default: ~/repos/mutual-vision)
+  MV_TOOLING_DIR    clone location            (default: $MV_PROJECTS_DIR/Mv.Common.Tooling)
   MV_TOOLING_REF    branch to check out       (default: main)
   MV_TENANT_ID      Entra tenant for az login
 EOF
@@ -242,14 +250,6 @@ install_claude_code() {
   info "Sign in later by running 'claude' once. Mv.Common.Tooling adds the MV plugin."
 }
 
-# Remote URL forms of Mutual-Vision Azure DevOps repos (plain HTTPS, HTTPS with the
-# user name the ADO "Clone" button adds, SSH).
-MV_GIT_REMOTES=(
-  "https://dev.azure.com/Mutual-Vision/**"
-  "https://*@dev.azure.com/Mutual-Vision/**"
-  "*@ssh.dev.azure.com:v3/Mutual-Vision/**"
-)
-
 # Prints "display name<TAB>email" from your Azure DevOps profile: the identity ADO
 # links commits to. Needs az login.
 ado_profile() {
@@ -259,11 +259,11 @@ ado_profile() {
 }
 
 # Name and email for MV repos come from your Azure DevOps profile (refreshed on every
-# run) and go in ~/.gitconfig-mv. Git applies them only to repos whose remote is in
-# Mutual-Vision Azure DevOps (includeIf hasconfig:remote, git 2.36+), wherever they
-# are cloned. Your global identity stays yours for every other repo.
+# run) and go in ~/.gitconfig-mv. Git applies them to every repo under the MV projects
+# folder (includeIf gitdir), whatever hosts it. Your global identity stays yours for
+# every other repo, so each customer can get its own folder and config the same way.
 configure_git_identity() {
-  local name="" email="" mvcfg="$HOME/.gitconfig-mv" r profile global_name global_email
+  local name="" email="" mvcfg="$HOME/.gitconfig-mv" profile global_name global_email
   global_name="$(git config --global user.name || true)"
   global_email="$(git config --global user.email || true)"
 
@@ -284,10 +284,14 @@ configure_git_identity() {
   git config --file "$mvcfg" pull.ff only
   [[ -z "$global_name" && -n "$name" ]] && git config --global user.name "$name"
 
-  for r in "${MV_GIT_REMOTES[@]}"; do
-    # shellcheck disable=SC2088 # git expands ~ in include paths itself
-    git config --global "includeIf.hasconfig:remote.*.url:$r.path" "~/.gitconfig-mv"
-  done
+  # gitdir/i: macOS file systems are case-insensitive, so ~/Repos/Mutual-Vision matches too.
+  mkdir -p "$projects_dir"
+  # git expands ~ in include paths itself; keeps the config portable across machines.
+  # shellcheck disable=SC2088
+  local gitdir="$projects_dir/" mvinc="~/.gitconfig-mv"
+  # shellcheck disable=SC2088
+  [[ "$gitdir" == "$HOME/"* ]] && gitdir="~/${gitdir#"$HOME/"}"
+  git config --global "includeIf.gitdir/i:$gitdir.path" "$mvinc"
   [[ -n "$(git config --global init.defaultBranch || true)" ]] || git config --global init.defaultBranch main
 
   # Older bootstrap versions set the MV email globally. Offer to put your own back.
@@ -300,7 +304,8 @@ configure_git_identity() {
     fi
   fi
 
-  ok "git: ${name:-<unset>} <${email:-unset}> in Mutual-Vision Azure DevOps repos (from $mvcfg)"
+  ok "git: ${name:-<unset>} <${email:-unset}> for repos in $projects_dir (from $mvcfg)"
+  info "Clone MV repos into $projects_dir so commits use this identity."
   [[ -n "$global_email" && "$global_email" != "$email" ]] && info "Other repos keep <$global_email>."
   GIT_EMAIL="$email"
 }
