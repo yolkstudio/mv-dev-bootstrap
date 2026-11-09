@@ -262,41 +262,84 @@ configure_git_identity() {
   GIT_EMAIL="$email"
 }
 
+# Bootstrap versions before this fix appended this block, which pinned Azure DevOps
+# to the new ed25519 key with IdentitiesOnly. Anyone whose registered key was id_rsa
+# then got "Permission denied (publickey)" on SSH remotes. Removes that exact,
+# unedited block; any other ssh.dev.azure.com entry is left alone. Returns 0 if removed.
+remove_legacy_ssh_block() {
+  local cfg="$1" tmp
+  [[ -f "$cfg" ]] || return 1
+  tmp="$(mktemp)"
+  if awk '
+    function flush() {
+      if (n) { if (legacy && n >= 4) removed = 1; else for (i = 1; i <= n; i++) print buf[i] }
+      n = 0; inblk = 0
+    }
+    inblk && /^[ \t]/ {
+      buf[++n] = $0
+      if ($0 !~ /^  (AddKeysToAgent yes|UseKeychain yes|IdentityFile ~\/\.ssh\/id_ed25519|IdentitiesOnly yes)$/) legacy = 0
+      next
+    }
+    inblk { flush() }
+    /^Host ssh\.dev\.azure\.com[ \t]*$/ { inblk = 1; legacy = 1; buf[++n] = $0; next }
+    { print }
+    END { flush(); exit !removed }
+  ' "$cfg" > "$tmp"; then
+    cp "$cfg" "$cfg.mv-bootstrap.bak"
+    cat "$tmp" > "$cfg"
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 configure_ssh_key() {
-  local key="$HOME/.ssh/id_ed25519"
-  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  local dir="$HOME/.ssh" cfg="$HOME/.ssh/config" key="$HOME/.ssh/id_ed25519"
+  local k others=""
+  mkdir -p "$dir" && chmod 700 "$dir"
 
-  if [[ -f "$key" ]]; then
-    ok "Using existing key $key"
+  for k in id_rsa id_ecdsa id_ecdsa_sk id_ed25519_sk; do
+    [[ -f "$dir/$k" ]] && others="$others $k"
+  done
+
+  if [[ -n "$others" ]] && remove_legacy_ssh_block "$cfg"; then
+    ok "Removed the ssh.dev.azure.com entry an older bootstrap added, so your${others} key works again"
+    info "(backup: $cfg.mv-bootstrap.bak)"
+  fi
+
+  # Keep any SSH setup that already exists: we don't know which key is registered in
+  # Azure DevOps, and SSH is optional here (git uses HTTPS with your Azure sign-in).
+  if grep -qsiE '^[[:space:]]*Host[[:space:]].*ssh\.dev\.azure\.com' "$cfg"; then
+    ok "Keeping your existing ssh.dev.azure.com entry in $cfg"
+    return
+  fi
+  if [[ -n "$others" || -f "$key" ]]; then
+    ok "Keeping your existing SSH key(s):${others}$([[ -f "$key" ]] && echo " id_ed25519")"
+    return
+  fi
+
+  info "Generating an ed25519 key. A passphrase is recommended"
+  [[ "$OS" == Darwin ]] && info "(it is stored in the macOS keychain, so you only type it once)."
+  if [[ "$NONINTERACTIVE" == 1 ]]; then
+    ssh-keygen -q -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$key" -N ""
   else
-    info "Generating an ed25519 key. A passphrase is recommended"
-    [[ "$OS" == Darwin ]] && info "(it is stored in the macOS keychain, so you only type it once)."
-    if [[ "$NONINTERACTIVE" == 1 ]]; then
-      ssh-keygen -q -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$key" -N ""
-    else
-      ssh-keygen -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$key" </dev/tty
-    fi
-    ok "Created $key"
+    ssh-keygen -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$key" </dev/tty
   fi
+  ok "Created $key"
 
-  # Azure DevOps only tries the first key the client offers, so pin this one.
-  local cfg="$HOME/.ssh/config"
-  if ! grep -qsE '^Host (.* )?ssh\.dev\.azure\.com( |$)' "$cfg"; then
-    {
-      printf '\nHost ssh.dev.azure.com\n'
-      printf '  AddKeysToAgent yes\n'
-      [[ "$OS" == Darwin ]] && printf '  UseKeychain yes\n'
-      printf '  IdentityFile ~/.ssh/id_ed25519\n'
-      printf '  IdentitiesOnly yes\n'
-    } >> "$cfg"
-    chmod 600 "$cfg"
-    info "Added an ssh.dev.azure.com entry to $cfg"
-  fi
+  # Load the key into the agent on first use (and on macOS remember the passphrase).
+  # No IdentityFile/IdentitiesOnly pinning, so keys added later still get offered.
+  {
+    printf '\n# Added by mv-dev-bootstrap\nHost ssh.dev.azure.com\n'
+    printf '  AddKeysToAgent yes\n'
+    [[ "$OS" == Darwin ]] && printf '  UseKeychain yes\n'
+  } >> "$cfg"
+  chmod 600 "$cfg"
   if [[ "$OS" == Darwin && "$NONINTERACTIVE" != 1 ]]; then
     ssh-add --apple-use-keychain "$key" </dev/tty 2>/dev/null || true
   fi
 
-  # Optional: git already authenticates over HTTPS with your Azure sign-in.
   info "Optional, only if you want to use SSH remotes: add this key at"
   info "https://dev.azure.com/Mutual-Vision/_usersSettings/keys"
   printf '\n%s\n\n' "$(cat "$key.pub")"
