@@ -20,9 +20,9 @@ bash bootstrap.sh
 2. **Homebrew** – installs it if missing and adds it to your shell profile.
 3. **Core CLIs** – `git`, `azure-cli`.
 4. **Claude Code** – installs it with the native installer (`~/.local/bin/claude`, self-updating) and adds `~/.local/bin` to your shell profile. Run `claude` once to sign in. It's available even while you wait for access to the tooling repo.
-5. **Git identity** – asks for your name if not set, and your `@mutualvision.co.uk` email, which it writes to `~/.gitconfig-mv`. Git uses that email only in repos whose remote is in Mutual-Vision Azure DevOps, wherever they are cloned (`includeIf hasconfig:remote.*.url`). Your global email stays as it is for every other repo.
-6. **SSH key** – only if you have no SSH key yet: creates `~/.ssh/id_ed25519`. Existing keys and `~/.ssh/config` entries are left alone. Adding the key to Azure DevOps (<https://dev.azure.com/Mutual-Vision/_usersSettings/keys>) is optional – only needed if you want SSH remotes.
-7. **Azure** – `az login` with your MV account.
+5. **Azure** – `az login` with your MV account.
+6. **Git identity** – takes your name and email from your Azure DevOps profile (the identity ADO links commits to) and writes them to `~/.gitconfig-mv`. Git uses them only in repos whose remote is in Mutual-Vision Azure DevOps, wherever they are cloned (`includeIf hasconfig:remote.*.url`). Your global name and email stay as they are for every other repo. Re-running the bootstrap refreshes them from ADO.
+7. **SSH key** – only if you have no SSH key yet: creates `~/.ssh/id_ed25519`. Existing keys and `~/.ssh/config` entries are left alone. Adding the key to Azure DevOps (<https://dev.azure.com/Mutual-Vision/_usersSettings/keys>) is optional – only needed if you want SSH remotes.
 8. **Azure DevOps** – configures git to authenticate to `dev.azure.com` with your Azure sign-in (short-lived Entra tokens: no PAT, no SSH key upload), then waits until you have read access to the private tooling repo.
 9. **Mv.Common.Tooling** – clones it to `~/repos/Mv.Common.Tooling` and runs its `install.sh`, which installs the MV-specific tooling (kubectl/AKS contexts, DB proxy, the MV Claude Code plugin with its skills and MCP servers, …).
 

@@ -48,9 +48,9 @@ main() {
   step "Homebrew";             install_homebrew
   step "Core CLIs";            brew_install git azure-cli
   step "Claude Code";          install_claude_code
+  step "Azure sign-in";        azure_login
   step "Git identity";         configure_git_identity
   step "SSH key";              configure_ssh_key
-  step "Azure sign-in";        azure_login
   step "Azure DevOps access";  configure_ado_git
   wait_for_ado_access
   step "Mv.Common.Tooling";    clone_tooling
@@ -250,30 +250,39 @@ MV_GIT_REMOTES=(
   "*@ssh.dev.azure.com:v3/Mutual-Vision/**"
 )
 
-# The MV email only applies to repos whose remote is in Mutual-Vision Azure DevOps
-# (git includeIf hasconfig:remote, git 2.36+), wherever they are cloned. The global
-# identity stays yours for every other repo.
-configure_git_identity() {
-  local name global_email email mvcfg="$HOME/.gitconfig-mv" r
-  name="$(git config --global user.name || true)"
-  global_email="$(git config --global user.email || true)"
-  if [[ -z "$name" ]]; then
-    name="$(prompt "Your full name for git commits")"
-    [[ -n "$name" ]] && git config --global user.name "$name"
-  fi
+# Prints "display name<TAB>email" from your Azure DevOps profile: the identity ADO
+# links commits to. Needs az login.
+ado_profile() {
+  az rest --resource "$ado_resource" \
+    --url "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1" \
+    --query "[displayName, emailAddress]" -o tsv 2>/dev/null | paste -s - -
+}
 
-  email="$(git config --file "$mvcfg" user.email 2>/dev/null || true)"
-  if [[ "$email" != *@mutualvision.co.uk ]]; then
-    local default=""
-    [[ "$global_email" == *@mutualvision.co.uk ]] && default="$global_email"
-    while :; do
-      email="$(prompt "Your @mutualvision.co.uk email for commits to MV repos" "$default")"
-      [[ "$email" == *@mutualvision.co.uk || "$NONINTERACTIVE" == 1 ]] && break
-      warn "Use your @mutualvision.co.uk address."
-    done
-    [[ -n "$email" ]] && git config --file "$mvcfg" user.email "$email"
+# Name and email for MV repos come from your Azure DevOps profile (refreshed on every
+# run) and go in ~/.gitconfig-mv. Git applies them only to repos whose remote is in
+# Mutual-Vision Azure DevOps (includeIf hasconfig:remote, git 2.36+), wherever they
+# are cloned. Your global identity stays yours for every other repo.
+configure_git_identity() {
+  local name="" email="" mvcfg="$HOME/.gitconfig-mv" r profile global_name global_email
+  global_name="$(git config --global user.name || true)"
+  global_email="$(git config --global user.email || true)"
+
+  profile="$(ado_profile || true)"
+  if [[ "$profile" == *$'\t'*@* ]]; then
+    name="${profile%%$'\t'*}"
+    email="${profile#*$'\t'}"
+  else
+    warn "Could not read your Azure DevOps profile."
+    name="$(git config --file "$mvcfg" user.name 2>/dev/null || true)"
+    email="$(git config --file "$mvcfg" user.email 2>/dev/null \
+             || az account show --query user.name -o tsv 2>/dev/null || true)"
+    name="$(prompt "Your full name for commits to MV repos" "${name:-$global_name}")"
+    email="$(prompt "Your @mutualvision.co.uk email for commits to MV repos" "$email")"
   fi
+  [[ -n "$name" ]] && git config --file "$mvcfg" user.name "$name"
+  [[ -n "$email" ]] && git config --file "$mvcfg" user.email "$email"
   git config --file "$mvcfg" pull.ff only
+  [[ -z "$global_name" && -n "$name" ]] && git config --global user.name "$name"
 
   for r in "${MV_GIT_REMOTES[@]}"; do
     # shellcheck disable=SC2088 # git expands ~ in include paths itself
