@@ -20,7 +20,14 @@ main() {
 
   # --- settings (override via env) ------------------------------------------
   local tooling_repo="${MV_TOOLING_REPO:-https://dev.azure.com/Mutual-Vision/Singularity/_git/Mv.Common.Tooling}"
-  local tooling_dir="${MV_TOOLING_DIR:-$HOME/repos/Mv.Common.Tooling}"
+  # MV repos live here; git uses your MV identity for every repo inside it.
+  local projects_dir="${MV_PROJECTS_DIR:-$HOME/repos/mutual-vision}"
+  projects_dir="${projects_dir%/}"
+  local tooling_dir="${MV_TOOLING_DIR:-$projects_dir/Mv.Common.Tooling}"
+  # Earlier versions cloned to ~/repos/Mv.Common.Tooling; keep using an existing clone.
+  if [[ -z "${MV_TOOLING_DIR:-}" && ! -d "$tooling_dir/.git" && -d "$HOME/repos/Mv.Common.Tooling/.git" ]]; then
+    tooling_dir="$HOME/repos/Mv.Common.Tooling"
+  fi
   local tooling_ref="${MV_TOOLING_REF:-main}"
   local tenant_id="${MV_TENANT_ID:-949e9f20-d9fa-4c2f-900a-f242465ba80f}"
   local non_interactive="${NONINTERACTIVE:-0}"
@@ -48,9 +55,9 @@ main() {
   step "Homebrew";             install_homebrew
   step "Core CLIs";            brew_install git azure-cli
   step "Claude Code";          install_claude_code
+  step "Azure sign-in";        azure_login
   step "Git identity";         configure_git_identity
   step "SSH key";              configure_ssh_key
-  step "Azure sign-in";        azure_login
   step "Azure DevOps access";  configure_ado_git
   wait_for_ado_access
   step "Mv.Common.Tooling";    clone_tooling
@@ -77,7 +84,8 @@ Usage: bootstrap.sh [--non-interactive]
 
 Environment overrides:
   MV_TOOLING_REPO   private tooling repo URL
-  MV_TOOLING_DIR    clone location            (default: ~/repos/Mv.Common.Tooling)
+  MV_PROJECTS_DIR   folder for MV repos       (default: ~/repos/mutual-vision)
+  MV_TOOLING_DIR    clone location            (default: $MV_PROJECTS_DIR/Mv.Common.Tooling)
   MV_TOOLING_REF    branch to check out       (default: main)
   MV_TENANT_ID      Entra tenant for az login
 EOF
@@ -242,61 +250,144 @@ install_claude_code() {
   info "Sign in later by running 'claude' once. Mv.Common.Tooling adds the MV plugin."
 }
 
+# Prints "display name<TAB>email" from your Azure DevOps profile: the identity ADO
+# links commits to. Needs az login.
+ado_profile() {
+  az rest --resource "$ado_resource" \
+    --url "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1" \
+    --query "[displayName, emailAddress]" -o tsv 2>/dev/null | paste -s - -
+}
+
+# Name and email for MV repos come from your Azure DevOps profile (refreshed on every
+# run) and go in ~/.gitconfig-mv. Git applies them to every repo under the MV projects
+# folder (includeIf gitdir), whatever hosts it. Your global identity stays yours for
+# every other repo, so each customer can get its own folder and config the same way.
 configure_git_identity() {
-  local name email
-  name="$(git config --global user.name || true)"
-  email="$(git config --global user.email || true)"
-  if [[ -z "$name" ]]; then
-    name="$(prompt "Your full name for git commits")"
-    [[ -n "$name" ]] && git config --global user.name "$name"
+  local name="" email="" mvcfg="$HOME/.gitconfig-mv" profile global_name global_email
+  global_name="$(git config --global user.name || true)"
+  global_email="$(git config --global user.email || true)"
+
+  profile="$(ado_profile || true)"
+  if [[ "$profile" == *$'\t'*@* ]]; then
+    name="${profile%%$'\t'*}"
+    email="${profile#*$'\t'}"
+  else
+    warn "Could not read your Azure DevOps profile."
+    name="$(git config --file "$mvcfg" user.name 2>/dev/null || true)"
+    email="$(git config --file "$mvcfg" user.email 2>/dev/null \
+             || az account show --query user.name -o tsv 2>/dev/null || true)"
+    name="$(prompt "Your full name for commits to MV repos" "${name:-$global_name}")"
+    email="$(prompt "Your @mutualvision.co.uk email for commits to MV repos" "$email")"
   fi
-  if [[ -z "$email" || "$email" != *@mutualvision.co.uk ]]; then
-    [[ -n "$email" ]] && warn "Current git email is $email."
-    local new
-    new="$(prompt "Your work email for git commits" "$email")"
-    [[ -n "$new" ]] && { email="$new"; git config --global user.email "$email"; }
+  [[ -n "$name" ]] && git config --file "$mvcfg" user.name "$name"
+  [[ -n "$email" ]] && git config --file "$mvcfg" user.email "$email"
+  git config --file "$mvcfg" pull.ff only
+  [[ -z "$global_name" && -n "$name" ]] && git config --global user.name "$name"
+
+  # gitdir/i: macOS file systems are case-insensitive, so ~/Repos/Mutual-Vision matches too.
+  mkdir -p "$projects_dir"
+  # git expands ~ in include paths itself; keeps the config portable across machines.
+  # shellcheck disable=SC2088
+  local gitdir="$projects_dir/" mvinc="~/.gitconfig-mv"
+  # shellcheck disable=SC2088
+  [[ "$gitdir" == "$HOME/"* ]] && gitdir="~/${gitdir#"$HOME/"}"
+  git config --global "includeIf.gitdir/i:$gitdir.path" "$mvinc"
+  [[ -n "$(git config --global init.defaultBranch || true)" ]] || git config --global init.defaultBranch main
+
+  # Older bootstrap versions set the MV email globally. Offer to put your own back.
+  if [[ -n "$email" && "$global_email" == "$email" && "$NONINTERACTIVE" != 1 ]]; then
+    local other
+    other="$(prompt "Email for non-MV repos (Enter to keep $global_email)" "$global_email")"
+    if [[ -n "$other" && "$other" != "$global_email" ]]; then
+      git config --global user.email "$other"
+      global_email="$other"
+    fi
   fi
-  git config --global init.defaultBranch main
-  git config --global pull.ff only
-  ok "git: ${name:-<unset>} <${email:-unset}>"
+
+  ok "git: ${name:-<unset>} <${email:-unset}> for repos in $projects_dir (from $mvcfg)"
+  info "Clone MV repos into $projects_dir so commits use this identity."
+  [[ -n "$global_email" && "$global_email" != "$email" ]] && info "Other repos keep <$global_email>."
   GIT_EMAIL="$email"
 }
 
+# Bootstrap versions before this fix appended this block, which pinned Azure DevOps
+# to the new ed25519 key with IdentitiesOnly. Anyone whose registered key was id_rsa
+# then got "Permission denied (publickey)" on SSH remotes. Removes that exact,
+# unedited block; any other ssh.dev.azure.com entry is left alone. Returns 0 if removed.
+remove_legacy_ssh_block() {
+  local cfg="$1" tmp
+  [[ -f "$cfg" ]] || return 1
+  tmp="$(mktemp)"
+  if awk '
+    function flush() {
+      if (n) { if (legacy && n >= 4) removed = 1; else for (i = 1; i <= n; i++) print buf[i] }
+      n = 0; inblk = 0
+    }
+    inblk && /^[ \t]/ {
+      buf[++n] = $0
+      if ($0 !~ /^  (AddKeysToAgent yes|UseKeychain yes|IdentityFile ~\/\.ssh\/id_ed25519|IdentitiesOnly yes)$/) legacy = 0
+      next
+    }
+    inblk { flush() }
+    /^Host ssh\.dev\.azure\.com[ \t]*$/ { inblk = 1; legacy = 1; buf[++n] = $0; next }
+    { print }
+    END { flush(); exit !removed }
+  ' "$cfg" > "$tmp"; then
+    cp "$cfg" "$cfg.mv-bootstrap.bak"
+    cat "$tmp" > "$cfg"
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
 configure_ssh_key() {
-  local key="$HOME/.ssh/id_ed25519"
-  mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+  local dir="$HOME/.ssh" cfg="$HOME/.ssh/config" key="$HOME/.ssh/id_ed25519"
+  local k others=""
+  mkdir -p "$dir" && chmod 700 "$dir"
 
-  if [[ -f "$key" ]]; then
-    ok "Using existing key $key"
+  for k in id_rsa id_ecdsa id_ecdsa_sk id_ed25519_sk; do
+    [[ -f "$dir/$k" ]] && others="$others $k"
+  done
+
+  if [[ -n "$others" ]] && remove_legacy_ssh_block "$cfg"; then
+    ok "Removed the ssh.dev.azure.com entry an older bootstrap added, so your${others} key works again"
+    info "(backup: $cfg.mv-bootstrap.bak)"
+  fi
+
+  # Keep any SSH setup that already exists: we don't know which key is registered in
+  # Azure DevOps, and SSH is optional here (git uses HTTPS with your Azure sign-in).
+  if grep -qsiE '^[[:space:]]*Host[[:space:]].*ssh\.dev\.azure\.com' "$cfg"; then
+    ok "Keeping your existing ssh.dev.azure.com entry in $cfg"
+    return
+  fi
+  if [[ -n "$others" || -f "$key" ]]; then
+    ok "Keeping your existing SSH key(s):${others}$([[ -f "$key" ]] && echo " id_ed25519")"
+    return
+  fi
+
+  info "Generating an ed25519 key. A passphrase is recommended"
+  [[ "$OS" == Darwin ]] && info "(it is stored in the macOS keychain, so you only type it once)."
+  if [[ "$NONINTERACTIVE" == 1 ]]; then
+    ssh-keygen -q -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$key" -N ""
   else
-    info "Generating an ed25519 key. A passphrase is recommended"
-    [[ "$OS" == Darwin ]] && info "(it is stored in the macOS keychain, so you only type it once)."
-    if [[ "$NONINTERACTIVE" == 1 ]]; then
-      ssh-keygen -q -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$key" -N ""
-    else
-      ssh-keygen -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$key" </dev/tty
-    fi
-    ok "Created $key"
+    ssh-keygen -t ed25519 -C "${GIT_EMAIL:-$USER@$(hostname)}" -f "$key" </dev/tty
   fi
+  ok "Created $key"
 
-  # Azure DevOps only tries the first key the client offers, so pin this one.
-  local cfg="$HOME/.ssh/config"
-  if ! grep -qsE '^Host (.* )?ssh\.dev\.azure\.com( |$)' "$cfg"; then
-    {
-      printf '\nHost ssh.dev.azure.com\n'
-      printf '  AddKeysToAgent yes\n'
-      [[ "$OS" == Darwin ]] && printf '  UseKeychain yes\n'
-      printf '  IdentityFile ~/.ssh/id_ed25519\n'
-      printf '  IdentitiesOnly yes\n'
-    } >> "$cfg"
-    chmod 600 "$cfg"
-    info "Added an ssh.dev.azure.com entry to $cfg"
-  fi
+  # Load the key into the agent on first use (and on macOS remember the passphrase).
+  # No IdentityFile/IdentitiesOnly pinning, so keys added later still get offered.
+  {
+    printf '\n# Added by mv-dev-bootstrap\nHost ssh.dev.azure.com\n'
+    printf '  AddKeysToAgent yes\n'
+    [[ "$OS" == Darwin ]] && printf '  UseKeychain yes\n'
+  } >> "$cfg"
+  chmod 600 "$cfg"
   if [[ "$OS" == Darwin && "$NONINTERACTIVE" != 1 ]]; then
     ssh-add --apple-use-keychain "$key" </dev/tty 2>/dev/null || true
   fi
 
-  # Optional: git already authenticates over HTTPS with your Azure sign-in.
   info "Optional, only if you want to use SSH remotes: add this key at"
   info "https://dev.azure.com/Mutual-Vision/_usersSettings/keys"
   printf '\n%s\n\n' "$(cat "$key.pub")"
